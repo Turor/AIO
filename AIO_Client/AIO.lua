@@ -176,7 +176,7 @@ local AIO_ENABLE_PCALL = true -- default true
 -- on server side. Make sure you have default Eluna extensions in place.
 -- On client side uses _ERRORMESSAGE function to output errors with trace.
 -- Requires AIO_ENABLE_PCALL to be true
-local AIO_ENABLE_TRACEBACK = false -- default false
+local AIO_ENABLE_TRACEBACK = true -- Turoran: on while debugging classless UI
 
 -- prints all messages
 local AIO_ENABLE_MSGPRINT = false -- default false
@@ -213,12 +213,12 @@ local AIO_MSG_COMPRESS = true -- default true
 -- Note that error messages will not have correct line numbers since obfuscation rearranage the code
 -- for debugging purposes it is recommended to disable this option
 -- Server side only
-local AIO_CODE_OBFUSCATE = true -- default true
+local AIO_CODE_OBFUSCATE = false -- Turoran: off so error line numbers match source
 
 -- Setting to send client errors to server
 -- Client must have AIO_ENABLE_PCALL enabled
 -- Client side only
-local AIO_ERROR_LOG = false -- default false
+local AIO_ERROR_LOG = true -- Turoran: send client Lua errors to worldserver log
 
 ----------------------------------
 
@@ -370,6 +370,34 @@ local function AIO_extractN(...)
     return select("#", ...), ...
 end
 
+-- Persist/print/forward an AIO Lua error to the operator-visible spots:
+-- client chat, Blizzard script-error UI, WTF SavedVariables (AIO_ERRORS),
+-- and the worldserver log (AIO Error handler).
+local function AIO_ReportError(errmsg)
+    errmsg = tostring(errmsg)
+    if AIO_SERVER then
+        if PrintError then
+            PrintError("[AIO] " .. errmsg)
+        else
+            print("[AIO] " .. errmsg)
+        end
+        return
+    end
+    AIO_ERRORS = AIO_ERRORS or {}
+    local stamp = (date and date("%Y-%m-%d %H:%M:%S")) or "?"
+    AIO_ERRORS[#AIO_ERRORS + 1] = stamp .. " " .. errmsg
+    while #AIO_ERRORS > 50 do
+        table.remove(AIO_ERRORS, 1)
+    end
+    if AIO_ERROR_LOG and AIO.Handle then
+        AIO.Handle("AIO", "Error", errmsg)
+    end
+    print("|cffff5555AIO error:|r " .. errmsg)
+    if _ERRORMESSAGE then
+        _ERRORMESSAGE(errmsg)
+    end
+end
+
 -- Calls function f with parameters ... with pcall
 -- Shows errors with print or AIO_debug
 local function AIO_pcall(f, ...)
@@ -378,24 +406,13 @@ local function AIO_pcall(f, ...)
         return f(...)
     end
     local data
-    if AIO_SERVER and AIO_ENABLE_TRACEBACK and debug.traceback then
+    if AIO_ENABLE_TRACEBACK and debug and debug.traceback then
         data = {AIO_extractN(xpcall(f, debug.traceback, ...))}
     else
         data = {AIO_extractN(pcall(f, ...))}
     end
     if not data[2] then
-        if AIO_SERVER then
-            AIO_debug(data[3])
-        else
-            if AIO_ERROR_LOG then
-                AIO.Handle("AIO", "Error", data[3])
-            end
-            if AIO_ENABLE_TRACEBACK then
-                _ERRORMESSAGE(data[3])
-            else
-                print(data[3])
-            end
-        end
+        AIO_ReportError(data[3])
         return
     end
     return unpack(data, 3, data[1]+1)
@@ -961,10 +978,19 @@ if AIO_SERVER then
         -- Handler that catches client errors
         -- can be used to log client errors to server
         function AIO_HANDLERS.Error(player, errmsg)
-            if not AIO_ERROR_LOG or type(errmsg) ~= 'string' then
+            if type(errmsg) ~= 'string' then
                 return
             end
-            PrintInfo(errmsg)
+            local who = "?"
+            if player and player.GetName then
+                who = player:GetName() or who
+            end
+            local line = "[AIO client][" .. who .. "] " .. errmsg
+            if PrintError then
+                PrintError(line)
+            else
+                print(line)
+            end
         end
 
         -- An addon message event handler for the lua engine
@@ -1012,6 +1038,8 @@ else
     AIO.AddSavedVar("AIO_FRAMEPOSITIONS")
     AIO_FRAMEPOSITIONSCHAR = AIO_FRAMEPOSITIONSCHAR or {}
     AIO.AddSavedVarChar("AIO_FRAMEPOSITIONSCHAR")
+    AIO_ERRORS = AIO_ERRORS or {}
+    AIO.AddSavedVar("AIO_ERRORS")
     -- Makes the frame save it's position over relog
     -- If char is true, the position saving is character bound, otherwise account bound
     function AIO.SavePosition(frame, char)
@@ -1292,6 +1320,20 @@ if AIO_MAIN_LUA_STATE then
     function cmds.trace(player)
         AIO_ENABLE_TRACEBACK = not AIO_ENABLE_TRACEBACK
         pprint(player, "using trace is now", AIO_ENABLE_TRACEBACK and "on" or "off")
+    end
+    if not AIO_SERVER then
+        helps.errors = "prints the last AIO Lua errors saved in WTF SavedVariables"
+        function cmds.errors()
+            local list = AIO_ERRORS or {}
+            if #list == 0 then
+                print("AIO: no saved errors. Reproduce, then /reload and check WTF/Account/.../SavedVariables/AIO_Client.lua")
+                return
+            end
+            print("AIO: " .. #list .. " saved error(s):")
+            for i = 1, #list do
+                print("|cffff5555" .. i .. ".|r " .. tostring(list[i]))
+            end
+        end
     end
     helps.debug = "toggles showing of debug messages"
     function cmds.debug(player)
