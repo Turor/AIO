@@ -373,7 +373,12 @@ end
 -- Persist/print/forward an AIO Lua error to the operator-visible spots:
 -- client chat, Blizzard script-error UI, WTF SavedVariables (AIO_ERRORS),
 -- and the worldserver log (AIO Error handler).
+local AIO_reporting_error = false
 local function AIO_ReportError(errmsg)
+    if AIO_reporting_error then
+        return
+    end
+    AIO_reporting_error = true
     errmsg = tostring(errmsg)
     if AIO_SERVER then
         if PrintError then
@@ -381,6 +386,7 @@ local function AIO_ReportError(errmsg)
         else
             print("[AIO] " .. errmsg)
         end
+        AIO_reporting_error = false
         return
     end
     AIO_ERRORS = AIO_ERRORS or {}
@@ -396,6 +402,7 @@ local function AIO_ReportError(errmsg)
     if _ERRORMESSAGE then
         _ERRORMESSAGE(errmsg)
     end
+    AIO_reporting_error = false
 end
 
 -- Calls function f with parameters ... with pcall
@@ -1206,26 +1213,24 @@ else
 
             local initmsg = AIO.Msg():Add("AIO", "Init", AIO_VERSION, addons)
 
-            local reset = 1
-            local timer = reset
+            -- Send once, then retry at most every 10s until Init completes.
+            -- The old every-frame backoff retried while a large addon payload
+            -- was still arriving, which stacked Init downloads after /aio reset.
+            local elapsed = 10
             local function ONUPDATE(self, diff)
                 if AIO_INITED then
                     self:SetScript("OnUpdate", nil)
                     initmsg = nil
-                    reset = nil
-                    timer = nil
+                    elapsed = nil
                     return
                 end
-                if timer < diff then
+                elapsed = elapsed + (diff or 0)
+                if elapsed >= 10 then
+                    elapsed = 0
                     initmsg:Send()
-                    timer = reset
-                    reset = reset * 1.5
-                else
-                    timer = timer - diff
                 end
             end
             frame:SetScript("OnUpdate", ONUPDATE)
-            -- initmsg:Send()
         elseif event == "PLAYER_LOGOUT" then
             -- On logout we must store all global namespace to saved vars
             AIO_sv = {} -- discard vars that no longer exist
@@ -1288,6 +1293,10 @@ if AIO_MAIN_LUA_STATE then
         function SlashCmdList.AIO(msg)
             local msg = msg:lower()
             if msg and msg ~= "" then
+                if cmds[msg] then
+                    cmds[msg]()
+                    return
+                end
                 for k,v in pairs(cmds) do
                     if k:find(msg, 1, true) == 1 then
                         v()
@@ -1312,6 +1321,10 @@ if AIO_MAIN_LUA_STATE then
     if not AIO_SERVER then
         helps.reset = "resets local AIO cache - clears saved addons and their saved variables and reloads the UI"
         function cmds.reset()
+            if AIO_RESETTING then
+                return
+            end
+            AIO_RESETTING = true
             AIO_RESET()
             ReloadUI()
         end

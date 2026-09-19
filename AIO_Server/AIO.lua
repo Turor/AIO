@@ -937,7 +937,16 @@ if AIO_SERVER then
         function AIO_HANDLERS.Init(player, version, clientdata)
             -- check that the player is not on cooldown for init calling
             local guid = player:GetGUIDLow()
-            if timers[guid] then
+            -- Empty client cache means /aio reset or first login after wipe; never ignore those.
+            local cacheEmpty = type(clientdata) ~= "table"
+            if type(clientdata) == "table" then
+                cacheEmpty = true
+                for _ in pairs(clientdata) do
+                    cacheEmpty = false
+                    break
+                end
+            end
+            if timers[guid] and not cacheEmpty then
                 return
             end
 
@@ -1003,9 +1012,9 @@ if AIO_SERVER then
 
         RegisterServerEvent(30, ONADDONMSG)
 
-        for k,v in ipairs(GetPlayersInWorld()) do
-            AIO.Handle(v, "AIO", "ForceReload")
-        end
+        -- Do not ForceReload every online player when this file loads.
+        -- worldserver restarts were stacking a fullscreen ReloadUI catcher
+        -- on top of /aio reset.
     end
 
 else
